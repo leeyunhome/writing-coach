@@ -11,7 +11,13 @@
     // 한글은 획 간격이 좁아, 이보다 넓히면 옆 획에 걸려 틀린 글자도 점수가 높게 나옵니다.
     trace: { near: 0.03, far: 0.08 },
     free: { near: 0.03, far: 0.08 },
+    // 작은 칸에서는 비율만 쓰면 허용 거리가 손으로 맞출 수 없을 만큼 좁아지므로,
+    // 화면에서 이 픽셀 수보다는 좁아지지 않게 합니다. 더 넓히면 작은 칸에서 틀린 글자도 점수가 오릅니다.
+    minNearPx: 1.5,
+    minFarPx: 4.5,
   };
+
+  const MIN_STROKE_PX = 1.5;   // 작은 칸에서도 획이 보이도록 하는 최소 굵기
 
   function makeContext() {
     const canvas = document.createElement('canvas');
@@ -41,7 +47,7 @@
    * fixedWidth를 주면 필압과 무관하게 그 굵기(px)로 그립니다(채점용).
    */
   function drawStrokes(ctx, strokes, size, color, map, fixedWidth) {
-    const width = (p) => fixedWidth || size * 0.04 * (0.5 + p);
+    const width = (p) => fixedWidth || Math.max(MIN_STROKE_PX, size * 0.04 * (0.5 + p));
     ctx.save();
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
@@ -230,8 +236,9 @@
    * - free(혼자 쓰기): 크기와 위치를 본보기에 맞춘 뒤 모양을 비교하고,
    *   크기와 위치가 어긋난 만큼 점수를 깎습니다(각각 최대 15%).
    * 본보기가 그려지지 않는 글자(공백 등)는 null을 돌려줍니다.
+   * cellPx는 화면에서의 칸 크기(px)이며, 작은 칸의 허용 거리를 정하는 데 씁니다.
    */
-  function scoreCell(ch, strokes, font, mode) {
+  function scoreCell(ch, strokes, font, mode, cellPx) {
     const model = glyphSkeleton(ch, font);
     const modelBox = boundingBox(model);
     if (!modelBox) return null;
@@ -257,8 +264,9 @@
     }
 
     const tolerance = TOLERANCE[mode === 'free' ? 'free' : 'trace'];
-    const near = tolerance.near * S;
-    const far = tolerance.far * S;
+    const pxToMask = cellPx > 0 ? S / cellPx : 0;   // 화면 1px이 채점 마스크에서 몇 px인지
+    const near = Math.max(tolerance.near * S, TOLERANCE.minNearPx * pxToMask);
+    const far = Math.max(tolerance.far * S, TOLERANCE.minFarPx * pxToMask);
     const recall = closeness(model, distanceMap(aligned), near, far);     // 본보기 획을 얼마나 따라 그었나
     const precision = closeness(aligned, distanceMap(model), near, far);  // 그은 획이 본보기 위에 있나
     // 둘을 곱해, 획을 빼먹거나 엉뚱한 곳에 그으면 그 비율만큼 점수가 깎이게 합니다.

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>필사</title>
+  <meta name="description" content="좋은 글을 줄 공책에 손으로 옮겨 씁니다.">
+  <meta name="theme-color" content="#2f6fed">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <nav class="tabs" aria-label="화면 전환">
+      <a href="index.html">칸 연습</a>
+      <a href="pilsa.html" aria-current="page">필사</a>
+    </nav>
+    <h1>필사</h1>
+    <p class="sub">글을 보며 줄 공책에 옮겨 씁니다. 점수는 매기지 않습니다.</p>
+  </header>
+
+  <section class="controls" aria-label="필사 설정">
+    <label>글
+      <select id="text"></select>
+    </label>
+    <label>줄 간격
+      <select id="gap">
+        <option value="64">넓게</option>
+        <option value="52" selected>보통</option>
+        <option value="42">좁게</option>
+      </select>
+    </label>
+  </section>
+
+  <form id="customForm" class="customtext" hidden>
+    <textarea id="customText" rows="4" maxlength="2000" placeholder="필사할 글을 붙여 넣거나 입력하세요 (최대 2000자)" aria-label="필사할 글 직접 입력"></textarea>
+    <button type="submit">적용</button>
+  </form>
+
+  <section class="actions">
+    <button id="undo" type="button">한 획 취소</button>
+    <button id="clear" type="button">모두 지우기</button>
+    <button id="more" type="button">줄 더하기</button>
+    <button id="save" type="button" class="primary">이미지로 저장</button>
+  </section>
+
+  <p id="notice" class="sub notice" role="status" hidden></p>
+
+  <section id="passage" class="summary passage" aria-label="필사할 글"></section>
+
+  <main id="paper" class="paper" aria-label="줄 공책">
+    <canvas id="ink"></canvas>
+  </main>
+
+  <section class="history">
+    <h2>필사한 날</h2>
+    <ol id="dayList"></ol>
+    <p id="dayEmpty" class="sub">아직 기록이 없습니다.</p>
+  </section>
+
+  <script src="pilsa.js"></script>
+</body>
+</html>

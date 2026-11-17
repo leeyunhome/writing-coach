@@ -11,6 +11,8 @@ const SHELL_FILES = [
   'style.css',
   'scoring.js',
   'app.js',
+  'pilsa.html',
+  'pilsa.js',
   'manifest.webmanifest',
   'icons/icon-192.png',
   'icons/icon-512.png',

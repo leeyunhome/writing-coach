@@ -30,6 +30,9 @@
   const MAX_CHARS = 40;
   const HISTORY_KEY = 'writingCoach.history';
   const HISTORY_SHOWN = 8;
+  const SIZE_KEY = 'writingCoach.size';
+  const TAGS_UNDER_CELL_MIN = 88;   // 이보다 작은 칸은 문제 표시가 칸 밑에 들어가지 않아 요약에 모아 보여 줍니다
+  const LOW_SCORE_SHOWN = 5;
 
   const ADVICE = {
     '작음': '글자가 본보기보다 작습니다. 칸을 더 채워 써 보세요.',
@@ -46,7 +49,7 @@
     text: PRESETS[0],
     mode: 'trace',
     font: 'gothic',
-    size: 120,
+    size: 64,
     cells: [],        // { ch, strokes, result, canvas, resultEl }
     undoStack: [],    // 획을 그은 순서대로 쌓인 칸
     penSeen: false,   // 펜을 한 번이라도 쓰면 손가락(손바닥) 입력은 무시합니다
@@ -205,13 +208,14 @@
     cell.resultEl.className = 'result ' + level;
     const score = document.createElement('strong');
     score.textContent = result.score + '점';
-    cell.resultEl.append(score, result.tags.join(' · '));
+    cell.resultEl.append(score);
+    if (state.size >= TAGS_UNDER_CELL_MIN) cell.resultEl.append(result.tags.join(' · '));
   }
 
   function grade() {
     const font = FONTS[state.font];
     for (const cell of state.cells) {
-      cell.result = Scoring.scoreCell(cell.ch, cell.strokes, font,state.mode);
+      cell.result = Scoring.scoreCell(cell.ch, cell.strokes, font, state.mode, state.size);
       showResult(cell);
       redraw(cell);
     }
@@ -265,9 +269,42 @@
       list.append(item);
     }
     summary.append(list);
+    renderLowScores();
 
     saveAttempt({ t: Date.now(), text: state.text, mode: state.mode, score: average, n: written.length });
     renderHistory();
+  }
+
+  /**
+   * 작은 칸에서는 글자별 문제 표시가 칸 밑에 들어가지 않으므로,
+   * 점수가 낮은 글자부터 몇 개를 요약 아래에 모아 보여 줍니다.
+   */
+  function renderLowScores() {
+    const old = summary.querySelector('.lowscores');
+    if (old) old.remove();
+    if (summary.hidden || state.size >= TAGS_UNDER_CELL_MIN) return;
+
+    const flagged = state.cells
+      .filter((c) => c.result && !c.result.empty && c.result.tags.length > 0)
+      .sort((a, b) => a.result.score - b.result.score)
+      .slice(0, LOW_SCORE_SHOWN);
+    if (flagged.length === 0) return;
+
+    const box = document.createElement('div');
+    box.className = 'lowscores';
+    const heading = document.createElement('div');
+    heading.className = 'sub';
+    heading.textContent = '점수가 낮은 글자';
+    const list = document.createElement('ul');
+    for (const cell of flagged) {
+      const item = document.createElement('li');
+      const lead = document.createElement('strong');
+      lead.textContent = `'${cell.ch}' ${cell.result.score}점`;
+      item.append(lead, ' ' + cell.result.tags.join(' · '));
+      list.append(item);
+    }
+    box.append(heading, list);
+    summary.append(box);
   }
 
   // ---------- AI 조언 ----------
@@ -732,10 +769,29 @@
       if (file) uploadFont(file);
     });
 
-    $('size').addEventListener('change', (e) => {
+    const sizeSelect = $('size');
+    const sizes = Array.from(sizeSelect.options, (option) => Number(option.value));
+    let savedSize = NaN;
+    try {
+      savedSize = Number(localStorage.getItem(SIZE_KEY));
+    } catch {
+      // 저장 공간을 못 쓰는 환경에서는 기본 크기로 시작합니다.
+    }
+    if (sizes.includes(savedSize)) state.size = savedSize;
+    sizeSelect.value = String(state.size);
+
+    sizeSelect.addEventListener('change', (e) => {
       state.size = Number(e.target.value);
+      try {
+        localStorage.setItem(SIZE_KEY, String(state.size));
+      } catch {
+        // 기억하지 못해도 이번에는 고른 크기로 씁니다.
+      }
       document.documentElement.style.setProperty('--cell', state.size + 'px');
       redrawAll();   // 획은 칸 크기에 대한 비율로 저장돼 있어 그대로 따라옵니다
+      // 문제 표시를 칸 밑에 둘지 요약에 모을지가 칸 크기에 따라 달라집니다.
+      state.cells.forEach((cell) => { if (cell.result) showResult(cell); });
+      renderLowScores();
     });
 
     $('undo').addEventListener('click', () => {
