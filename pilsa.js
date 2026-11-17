@@ -147,12 +147,24 @@
 
   const strokeWidth = (p) => Math.max(1.2, state.gap * 0.05 * (0.5 + p));
 
-  function drawSegment(ctx, a, b) {
+  const midpoint = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+
+  /** from에서 to까지, ctrl을 당기는 점으로 한 곡선 한 토막 */
+  function drawCurve(ctx, from, ctrl, to, p) {
     const g = state.gap;
     ctx.beginPath();
-    ctx.lineWidth = strokeWidth((a.p + b.p) / 2);
-    ctx.moveTo(a.x * g, a.y * g);
-    ctx.lineTo(b.x * g, b.y * g);
+    ctx.lineWidth = strokeWidth(p);
+    ctx.moveTo(from.x * g, from.y * g);
+    ctx.quadraticCurveTo(ctrl.x * g, ctrl.y * g, to.x * g, to.y * g);
+    ctx.stroke();
+  }
+
+  function drawLine(ctx, from, to, p) {
+    const g = state.gap;
+    ctx.beginPath();
+    ctx.lineWidth = strokeWidth(p);
+    ctx.moveTo(from.x * g, from.y * g);
+    ctx.lineTo(to.x * g, to.y * g);
     ctx.stroke();
   }
 
@@ -162,15 +174,60 @@
     ctx.fill();
   }
 
+  /**
+   * 보정된 점들을 곡선으로 잇습니다. 점과 점의 가운데를 곡선의 이음매로 삼아 모서리가 생기지 않게 합니다.
+   * 쓰는 중에 한 토막씩 그리는 LiveStroke와 같은 순서로 그려, 다시 그려도 모양이 바뀌지 않습니다.
+   */
+  function drawSmoothed(ctx, pts) {
+    drawDot(ctx, pts[0]);
+    if (pts.length === 1) return;
+    let prev = pts[0];
+    let prevMid = pts[0];
+    for (let i = 1; i < pts.length; i++) {
+      const cur = pts[i];
+      const mid = midpoint(prev, cur);
+      drawCurve(ctx, prevMid, prev, mid, (prev.p + cur.p) / 2);
+      prev = cur;
+      prevMid = mid;
+    }
+    drawLine(ctx, prevMid, prev, prev.p);
+  }
+
+  /** 쓰는 중인 획: 들어오는 점을 바로 보정해 한 토막씩 이어 그립니다. */
+  function LiveStroke(first) {
+    const smoother = Ink.createSmoother(state.gap);
+    let prev = smoother.push(first);
+    let prevMid = prev;
+    let moved = false;
+    drawDot(inkContext(), prev);
+
+    return {
+      add(ctx, pt) {
+        const cur = smoother.push(pt);
+        const mid = midpoint(prev, cur);
+        drawCurve(ctx, prevMid, prev, mid, (prev.p + cur.p) / 2);
+        prev = cur;
+        prevMid = mid;
+        moved = true;
+      },
+      // 펜을 뗀 실제 위치까지 마저 잇습니다(Ink.smoothPoints의 마지막 점과 같은 처리).
+      finish(ctx, raw) {
+        if (!moved) return;
+        const end = { x: raw.x, y: raw.y, p: prev.p };
+        const mid = midpoint(prev, end);
+        drawCurve(ctx, prevMid, prev, mid, (prev.p + end.p) / 2);
+        drawLine(ctx, mid, end, end.p);
+      },
+    };
+  }
+
   function drawInk(ctx) {
     ctx.strokeStyle = INK;
     ctx.fillStyle = INK;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     for (const stroke of state.strokes) {
-      const pts = stroke.points;
-      if (pts.length === 1) drawDot(ctx, pts[0]);
-      for (let i = 1; i < pts.length; i++) drawSegment(ctx, pts[i - 1], pts[i]);
+      drawSmoothed(ctx, Ink.smoothPoints(stroke.points, state.gap));
     }
   }
 
@@ -214,6 +271,7 @@
   function attachInput() {
     let activeId = null;
     let stroke = null;
+    let live = null;
     let scrollId = null;
     let scrollY = 0;
 
@@ -243,7 +301,7 @@
       activeId = e.pointerId;
       stroke = { points: [toPoint(e)] };
       state.strokes.push(stroke);
-      drawDot(inkContext(), stroke.points[0]);
+      live = LiveStroke(stroke.points[0]);
       recordDay();
     });
 
@@ -258,16 +316,18 @@
       const ctx = inkContext();
       for (const ev of events.length ? events : [e]) {
         const pt = toPoint(ev);
-        drawSegment(ctx, stroke.points[stroke.points.length - 1], pt);
-        stroke.points.push(pt);
+        stroke.points.push(pt);   // 저장은 원래 좌표 그대로
+        live.add(ctx, pt);        // 화면에는 보정해서 그립니다
       }
     });
 
     const end = (e) => {
       if (e.pointerId === scrollId) scrollId = null;
       if (e.pointerId !== activeId) return;
+      live.finish(inkContext(), stroke.points[stroke.points.length - 1]);
       activeId = null;
       stroke = null;
+      live = null;
       savePageSoon();
     };
     canvas.addEventListener('pointerup', end);

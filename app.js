@@ -127,7 +127,8 @@
       Scoring.drawGlyph(ctx, cell.ch, font,size, 'rgba(214, 60, 50, 0.32)');
     }
 
-    Scoring.drawStrokes(ctx, cell.strokes, size, '#1b2a4a');
+    // 화면에는 보정한 획을 그립니다. 채점과 AI 조언 이미지는 원래 획을 씁니다.
+    Scoring.drawStrokes(ctx, Ink.smoothStrokes(cell.strokes, size), size, '#1b2a4a');
   }
 
   function redrawAll() {
