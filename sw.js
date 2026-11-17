@@ -10,6 +10,7 @@ const SHELL_FILES = [
   'index.html',
   'style.css',
   'scoring.js',
+  'sound.js',
   'app.js',
   'pilsa.html',
   'pilsa.js',

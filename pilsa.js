@@ -326,6 +326,8 @@
       showNotice('아직 쓴 글씨가 없습니다.');
       return;
     }
+    // 소리는 이미지를 다 만든 뒤에 내므로, 버튼을 누른 지금 소리 장치를 먼저 깨워 둡니다(iPad).
+    Sound.unlock();
     const scale = 2;
     const g = state.gap;
     const footer = 36;
@@ -359,6 +361,7 @@
       showNotice('이미지를 만들지 못했습니다.');
       return;
     }
+    Sound.play('done');
     const name = `필사_${text.title}_${today()}.png`;
     const file = new File([blob], name, { type: 'image/png' });
     // 태블릿·휴대폰에서는 공유 창(사진에 저장 등)을 열고, PC에서는 바로 내려받습니다.
@@ -435,15 +438,19 @@
       state.lines = BASE_LINES;
       layout();
       savePageNow();
+      Sound.play('erase');
     });
 
     $('more').addEventListener('click', () => {
+      if (state.lines >= MAX_LINES) return;
       state.lines = Math.min(MAX_LINES, state.lines + MORE_LINES);
       layout();
       savePageSoon();
+      Sound.play('page');
     });
 
     $('save').addEventListener('click', saveImage);
+    Sound.bindToggle($('sound'));
 
     window.addEventListener('resize', layout);
     // 화면을 떠날 때 기다리던 저장을 바로 끝냅니다.
