@@ -84,6 +84,9 @@ button.primary:active { background: #245bd0; }
 
 button:disabled { opacity: 0.45; cursor: default; }
 
+.toggle { display: flex; align-items: center; gap: 6px; min-height: 40px; font-size: 14px; color: var(--muted); cursor: pointer; }
+.toggle input { width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
+
 .notice { margin-top: 10px; color: var(--bad); }
 
 .advice h3 { margin: 14px 0 4px; font-size: 15px; }

@@ -33,6 +33,25 @@
   const SIZE_KEY = 'writingCoach.size';
   const TAGS_UNDER_CELL_MIN = 88;   // 이보다 작은 칸은 문제 표시가 칸 밑에 들어가지 않아 요약에 모아 보여 줍니다
   const LOW_SCORE_SHOWN = 5;
+  const SOUND_KEY = 'writingCoach.sound';
+
+  // 채점 효과음. 파일 없이 브라우저에서 음을 합성합니다. freq는 Hz, at·dur은 초입니다.
+  const SOUNDS = {
+    good: [   // 80점 이상: 도-미-솔 올라가는 소리
+      { freq: 523.25, at: 0, dur: 0.18 },
+      { freq: 659.25, at: 0.09, dur: 0.18 },
+      { freq: 783.99, at: 0.18, dur: 0.4 },
+    ],
+    mid: [    // 60~79점: 솔-도 두 음
+      { freq: 392.0, at: 0, dur: 0.2 },
+      { freq: 523.25, at: 0.12, dur: 0.3 },
+    ],
+    bad: [    // 60점 미만: 낮게 내려가는 부드러운 소리
+      { freq: 329.63, at: 0, dur: 0.25, type: 'triangle' },
+      { freq: 261.63, at: 0.14, dur: 0.4, type: 'triangle' },
+    ],
+  };
+  let audio = null;
 
   const ADVICE = {
     '작음': '글자가 본보기보다 작습니다. 칸을 더 채워 써 보세요.',
@@ -232,6 +251,7 @@
     }
 
     const average = Math.round(written.reduce((sum, c) => sum + c.result.score, 0) / written.length);
+    playTones(SOUNDS[average >= 80 ? 'good' : average >= 60 ? 'mid' : 'bad']);
     const previous = loadHistory().find((h) => h.text === state.text && h.mode === state.mode);
 
     const total = document.createElement('div');
@@ -305,6 +325,40 @@
     }
     box.append(heading, list);
     summary.append(box);
+  }
+
+  // ---------- 효과음 ----------
+
+  /**
+   * 음 목록을 재생합니다. iPad Safari는 버튼을 누른 순간에만 소리를 허락하므로
+   * 채점 버튼 처리 안에서 바로 부릅니다. 소리를 못 내는 환경이면 조용히 넘어갑니다.
+   */
+  function playTones(notes) {
+    if (!$('sound').checked) return;
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    try {
+      if (!audio) audio = new AudioCtx();
+      if (audio.state === 'suspended') audio.resume();
+      const start = audio.currentTime + 0.02;
+      for (const note of notes) {
+        const osc = audio.createOscillator();
+        const gain = audio.createGain();
+        const t = start + note.at;
+        osc.type = note.type || 'sine';
+        osc.frequency.value = note.freq;
+        // 툭 끊기는 잡음이 없도록 소리를 짧게 키웠다가 서서히 줄입니다.
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.18, t + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + note.dur);
+        osc.connect(gain);
+        gain.connect(audio.destination);
+        osc.start(t);
+        osc.stop(t + note.dur + 0.02);
+      }
+    } catch {
+      // 효과음이 안 나도 채점은 그대로입니다.
+    }
   }
 
   // ---------- AI 조언 ----------
@@ -813,6 +867,22 @@
     });
 
     $('grade').addEventListener('click', grade);
+
+    const sound = $('sound');
+    let savedSound = null;
+    try {
+      savedSound = localStorage.getItem(SOUND_KEY);
+    } catch {
+      // 기억하지 못하면 기본값(켜짐)으로 씁니다.
+    }
+    sound.checked = savedSound !== 'off';
+    sound.addEventListener('change', () => {
+      try {
+        localStorage.setItem(SOUND_KEY, sound.checked ? 'on' : 'off');
+      } catch {
+        // 기억하지 못해도 이번에는 고른 대로 씁니다.
+      }
+    });
     $('advise').addEventListener('click', requestAdvice);
 
     build();
