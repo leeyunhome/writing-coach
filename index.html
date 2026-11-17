@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>글씨 교정 연습</title>
+  <meta name="description" content="본보기 글씨를 따라 쓰고 크기·위치·획을 채점해 손글씨를 교정합니다.">
+  <meta name="theme-color" content="#2f6fed">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="글씨 교정">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>글씨 교정 연습</h1>
+    <p class="sub">본보기를 따라 쓰고, 채점으로 크기·위치·획을 점검합니다.</p>
+  </header>
+
+  <section class="controls" aria-label="연습 설정">
+    <label>문장
+      <select id="preset"></select>
+    </label>
+    <form id="customForm">
+      <input id="customText" type="text" maxlength="40" placeholder="직접 입력 (최대 40자)" aria-label="연습할 문장 직접 입력">
+      <button type="submit">적용</button>
+    </form>
+
+    <fieldset class="segmented">
+      <legend class="visually-hidden">연습 방식</legend>
+      <label><input type="radio" name="mode" value="trace" checked><span>따라 쓰기</span></label>
+      <label><input type="radio" name="mode" value="free"><span>혼자 쓰기</span></label>
+    </fieldset>
+
+    <label>본보기
+      <select id="font">
+        <option value="gothic">고딕</option>
+        <option value="myeongjo">명조</option>
+        <option value="penNeat">펜글씨 (또박또박)</option>
+        <option value="penScript">펜글씨 (흘려 쓴)</option>
+      </select>
+    </label>
+    <label class="filebutton">글꼴 파일 올리기
+      <input id="fontFile" type="file" class="visually-hidden">
+    </label>
+    <label>칸 크기
+      <select id="size">
+        <option value="160">크게</option>
+        <option value="120" selected>보통</option>
+        <option value="88">작게</option>
+      </select>
+    </label>
+  </section>
+
+  <p id="fontNotice" class="sub notice" role="status" hidden></p>
+
+  <section class="actions">
+    <button id="undo" type="button">한 획 취소</button>
+    <button id="clear" type="button">모두 지우기</button>
+    <button id="grade" type="button" class="primary">채점</button>
+    <button id="advise" type="button" disabled hidden>AI 조언</button>
+  </section>
+
+  <section id="summary" class="summary" aria-live="polite" hidden></section>
+  <section id="advice" class="summary advice" aria-live="polite" hidden></section>
+
+  <main id="grid" class="grid" aria-label="연습 칸"></main>
+
+  <section class="history">
+    <h2>최근 기록</h2>
+    <ol id="historyList"></ol>
+    <p id="historyEmpty" class="sub">아직 채점 기록이 없습니다.</p>
+  </section>
+
+  <script src="scoring.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
