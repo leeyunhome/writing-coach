@@ -1,0 +1,5 @@
+# Cloud Run에 올릴 때 서버에 필요한 파일만 보냅니다.
+*
+!Dockerfile
+!requirements.txt
+!server.py

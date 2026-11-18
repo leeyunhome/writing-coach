@@ -311,6 +311,12 @@
 
   // ---------- AI 조언 ----------
 
+  // AI 조언 서버 주소는 config.js에서 정합니다. 비어 있으면 화면과 같은 서버(python server.py)에 묻습니다.
+  const ADVICE_BASE = ((window.WRITING_COACH_CONFIG || {}).adviceApi || '').replace(/\/+$/, '');
+  const ADVICE_URL = ADVICE_BASE ? ADVICE_BASE + '/api/advice' : 'api/advice';
+  const ACCESS_CODE_KEY = 'writingCoach.accessCode';
+  let adviceNeedsCode = false;    // 서버가 접속 코드를 요구하는지(detectAdviceServer가 확인)
+
   const ADVICE_CELL = 128;       // AI에 보내는 이미지의 칸 크기(px)
   const ADVICE_PER_ROW = 10;
   let adviceRequest = 0;         // 요청 번호. 기다리는 사이 글씨가 바뀌면 늦게 온 응답을 버립니다
@@ -409,23 +415,44 @@
     const written = state.cells.filter((c) => c.result && !c.result.empty);
     if (written.length === 0) return;
 
-    if (location.protocol === 'file:') {
+    if (location.protocol === 'file:' && !ADVICE_BASE) {
       showAdviceMessage('AI 조언은 파일을 직접 열었을 때는 쓸 수 없습니다. 이 폴더에서 python server.py 를 실행한 뒤 http://localhost:8000 으로 열어 주세요.', true);
       return;
+    }
+
+    // 접속 코드는 처음 한 번 묻고 이 기기에 기억합니다.
+    let code = '';
+    if (adviceNeedsCode) {
+      try {
+        code = localStorage.getItem(ACCESS_CODE_KEY) || '';
+      } catch {
+        code = '';
+      }
+      if (!code) {
+        code = (window.prompt('AI 조언 접속 코드를 입력해 주세요.') || '').trim();
+        if (!code) return;
+        try {
+          localStorage.setItem(ACCESS_CODE_KEY, code);
+        } catch {
+          // 기억하지 못하면 다음에 다시 묻습니다.
+        }
+      }
     }
 
     const button = $('advise');
     const requestId = ++adviceRequest;
     button.disabled = true;
     button.textContent = '조언 받는 중…';
-    showAdviceMessage('글씨를 살펴보고 있습니다. 10초쯤 걸릴 수 있습니다.', false);
+    showAdviceMessage('글씨를 살펴보고 있습니다. 10~20초쯤 걸릴 수 있습니다.', false);
 
     let advice = null;
     let errorText = null;
     try {
-      const response = await fetch('/api/advice', {
+      const headers = { 'Content-Type': 'application/json' };
+      if (code) headers['X-Access-Code'] = code;
+      const response = await fetch(ADVICE_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           text: state.text,
           mode: state.mode,
@@ -445,9 +472,21 @@
         advice = payload;
       } else {
         errorText = (payload && payload.error) || `AI 조언을 받아오지 못했습니다. (${response.status})`;
+        if (response.status === 401) {
+          // 틀린 코드는 지워 두고, 다음에 누르면 다시 묻습니다.
+          try {
+            localStorage.removeItem(ACCESS_CODE_KEY);
+          } catch {
+            // 지우지 못해도 다음 요청에서 다시 401이 옵니다.
+          }
+          adviceNeedsCode = true;
+          errorText += ' 다시 누르면 코드를 새로 입력할 수 있습니다.';
+        }
       }
     } catch {
-      errorText = '서버에 연결하지 못했습니다. server.py가 실행 중인지 확인해 주세요.';
+      errorText = ADVICE_BASE
+        ? 'AI 조언 서버에 연결하지 못했습니다. 인터넷 연결을 확인해 주세요.'
+        : '서버에 연결하지 못했습니다. server.py가 실행 중인지 확인해 주세요.';
     }
 
     if (requestId !== adviceRequest) return;   // 기다리는 사이 글씨나 채점이 바뀌었습니다
@@ -829,15 +868,18 @@
   }
 
   /**
-   * AI 조언은 server.py로 열었을 때만 됩니다. 정적 호스팅이나 설치한 앱에서는
-   * 눌러도 실패하는 버튼을 보이지 않게, 서버가 있다고 답할 때만 버튼을 꺼냅니다.
+   * AI 조언 서버(config.js의 주소, 없으면 같은 서버)가 있다고 답할 때만 버튼을 꺼냅니다.
+   * 서버가 없는 곳에서 눌러도 실패하는 버튼을 보이지 않기 위해서입니다.
    */
   async function detectAdviceServer() {
-    if (location.protocol === 'file:') return;
+    if (location.protocol === 'file:' && !ADVICE_BASE) return;
     try {
-      const response = await fetch('api/advice', { cache: 'no-store' });
+      const response = await fetch(ADVICE_URL, { cache: 'no-store' });
       const payload = response.ok ? await response.json() : null;
-      if (payload && payload.available) $('advise').hidden = false;
+      if (payload && payload.available) {
+        adviceNeedsCode = Boolean(payload.needsCode);
+        $('advise').hidden = false;
+      }
     } catch {
       // 서버가 없거나 인터넷이 끊긴 경우: 버튼을 숨긴 채 둡니다.
     }

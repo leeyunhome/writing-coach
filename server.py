@@ -1,20 +1,35 @@
 """글씨 교정 연습 서버: 화면 파일을 내보내고, AI 조언 요청을 Gemini로 전달합니다.
 
-실행:  python server.py            (기본 포트 8000)
-       python server.py 8080
+내 PC에서 실행:  python server.py            (기본 포트 8000, 화면 파일과 AI 조언을 함께 제공)
+                 python server.py 8080
+Cloud Run 배포:  deploy-cloudrun.ps1 참고. API_ONLY=1로 AI 조언만 제공하고, 화면은 GitHub Pages가 맡습니다.
 
-API 키는 환경 변수 GEMINI_API_KEY에서 읽으며 브라우저로 보내지 않습니다.
-모델은 환경 변수 GEMINI_MODEL로 바꿀 수 있습니다.
+환경 변수
+  GEMINI_API_KEY        Gemini API 키. 브라우저로 보내지 않습니다.
+  GEMINI_MODEL          모델 이름(기본 gemini-flash-latest)
+  PORT                  포트(Cloud Run이 정해 줌). 없으면 명령줄 인자, 그것도 없으면 8000
+  API_ONLY=1            화면 파일은 내보내지 않고 /api/advice만 엽니다.
+  ACCESS_CODE           정해 두면 이 코드를 보낸 요청만 AI 조언을 받습니다.
+  ALLOWED_ORIGINS       다른 주소의 화면에서 부를 수 있게 허용할 출처(쉼표로 구분)
+  DAILY_LIMIT           하루(한국 시간) 전체 AI 조언 횟수 상한(기본 200)
+  PER_IP_DAILY_LIMIT    하루 접속 주소별 상한(기본 30)
+  MIN_INTERVAL_SECONDS  같은 접속 주소의 요청 사이 최소 간격(기본 15초)
 """
 
 import base64
 import binascii
+import hmac
 import json
+import math
 import os
 import sys
+import threading
+import time
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from google import genai
 from google.genai import errors, types
@@ -25,6 +40,58 @@ MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
 MAX_BODY_BYTES = 3 * 1024 * 1024
 MAX_CELLS = 40
 PNG_PREFIX = "data:image/png;base64,"
+API_PATH = "/api/advice"
+
+API_ONLY = os.environ.get("API_ONLY") == "1"
+ACCESS_CODE = os.environ.get("ACCESS_CODE", "").strip()
+ALLOWED_ORIGINS = {
+    origin.strip().rstrip("/")
+    for origin in os.environ.get("ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+}
+DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT", "200"))
+PER_IP_DAILY_LIMIT = int(os.environ.get("PER_IP_DAILY_LIMIT", "30"))
+MIN_INTERVAL_SECONDS = float(os.environ.get("MIN_INTERVAL_SECONDS", "15"))
+KST = timezone(timedelta(hours=9))
+
+
+class RateLimiter:
+    """AI 조언 사용량 제한. 서버 메모리에 두므로 서버가 다시 시작되면 그날 횟수가 초기화됩니다.
+    Cloud Run에서는 인스턴스를 1개로 묶어(--max-instances 1) 한 곳에서만 세도록 합니다."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.day = None
+        self.total = 0
+        self.per_ip: dict[str, int] = {}
+        self.last: dict[str, float] = {}
+
+    def take(self, ip: str) -> str | None:
+        """한 번 쓸 수 있으면 횟수를 세고 None, 아니면 이유를 돌려줍니다.
+        AI 호출이 실패해도 시도 횟수는 셉니다(실패를 이용한 남용을 막기 위해)."""
+        now = time.monotonic()
+        today = datetime.now(KST).date()
+        with self.lock:
+            if today != self.day:
+                self.day = today
+                self.total = 0
+                self.per_ip.clear()
+                self.last.clear()
+            if self.total >= DAILY_LIMIT:
+                return "오늘 AI 조언 사용량이 모두 찼습니다. 내일 다시 시도해 주세요."
+            if self.per_ip.get(ip, 0) >= PER_IP_DAILY_LIMIT:
+                return "오늘 이 기기에서 받을 수 있는 AI 조언을 모두 받았습니다. 내일 다시 시도해 주세요."
+            last = self.last.get(ip)
+            if last is not None and now - last < MIN_INTERVAL_SECONDS:
+                wait = math.ceil(MIN_INTERVAL_SECONDS - (now - last))
+                return f"조금 전에 조언을 받았습니다. {wait}초 뒤에 다시 시도해 주세요."
+            self.total += 1
+            self.per_ip[ip] = self.per_ip.get(ip, 0) + 1
+            self.last[ip] = now
+            return None
+
+
+LIMITER = RateLimiter()
 
 SYSTEM_INSTRUCTION = """\
 당신은 성인의 손글씨 교정을 돕는 글씨 선생님입니다.
@@ -91,7 +158,7 @@ def parse_request(body: bytes) -> tuple[str, str, list[dict], bytes]:
     """요청 본문을 검사해 (문장, 방식, 채점 자료, PNG 바이트)로 돌려줍니다. 잘못되면 ValueError."""
     try:
         data = json.loads(body)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:   # UTF-8이 아닌 본문도 같은 안내로
         raise ValueError("요청 형식이 잘못됐습니다.") from exc
     if not isinstance(data, dict):
         raise ValueError("요청 형식이 잘못됐습니다.")
@@ -160,14 +227,56 @@ class Handler(SimpleHTTPRequestHandler):
         ".webmanifest": "application/manifest+json",
     }
 
+    # ---------- 출처(CORS)와 접속 주소 ----------
+
+    def origin_allowed(self) -> bool:
+        """요청을 보낸 화면의 출처가 허용된 곳인지. 출처가 없으면(브라우저 밖 호출) 접속 코드와 사용량 제한에 맡깁니다."""
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        origin = origin.rstrip("/")
+        same_origin = urlsplit(origin).netloc == self.headers.get("Host", "")
+        return same_origin or origin in ALLOWED_ORIGINS
+
+    def send_cors_headers(self) -> None:
+        origin = (self.headers.get("Origin") or "").rstrip("/")
+        if origin in ALLOWED_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+
+    def client_ip(self) -> str:
+        # Cloud Run 같은 중계 서버 뒤에서는 실제 접속 주소가 X-Forwarded-For 끝에 붙는다고 보고 마지막 값을 씁니다.
+        # 앞쪽 값은 접속자가 마음대로 넣을 수 있기 때문입니다.
+        forwarded = self.headers.get("X-Forwarded-For")
+        if API_ONLY and forwarded:
+            return forwarded.split(",")[-1].strip()
+        return self.client_address[0]
+
     def send_json(self, status: int, payload: dict) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_cors_headers()
         self.end_headers()
         self.wfile.write(body)
+
+    def do_OPTIONS(self) -> None:
+        """다른 주소의 화면(GitHub Pages)이 POST 전에 보내는 사전 확인 요청"""
+        if self.path.split("?")[0] != API_PATH:
+            self.send_json(404, {"error": "없는 주소입니다."})
+            return
+        if not self.origin_allowed():
+            self.send_json(403, {"error": "허용되지 않은 출처입니다."})
+            return
+        self.send_response(204)
+        self.send_cors_headers()
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Access-Code")
+        self.send_header("Access-Control-Max-Age", "600")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def end_headers(self) -> None:
         # 개발 중 고친 화면 파일이 iPad에서 바로 보이도록 캐시를 끕니다.
@@ -177,18 +286,36 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         # 화면이 AI 조언 버튼을 보일지 정할 때 묻습니다.
-        if self.path.split("?")[0] == "/api/advice":
-            self.send_json(200, {"available": self.client is not None})
+        if self.path.split("?")[0] == API_PATH:
+            self.send_json(200, {"available": self.client is not None, "needsCode": bool(ACCESS_CODE)})
+            return
+        if API_ONLY:
+            self.send_json(404, {"error": "없는 주소입니다."})
             return
         super().do_GET()
 
+    def do_HEAD(self) -> None:
+        if API_ONLY:
+            self.send_response(404)
+            self.end_headers()
+            return
+        super().do_HEAD()
+
     def do_POST(self) -> None:
-        if self.path != "/api/advice":
+        if self.path.split("?")[0] != API_PATH:
             self.send_json(404, {"error": "없는 주소입니다."})
+            return
+        if not self.origin_allowed():
+            self.send_json(403, {"error": "허용되지 않은 출처입니다."})
             return
         if self.client is None:
             self.send_json(503, {"error": "서버에 GEMINI_API_KEY가 설정돼 있지 않습니다."})
             return
+        if ACCESS_CODE:
+            given = self.headers.get("X-Access-Code", "").strip()
+            if not hmac.compare_digest(given.encode("utf-8"), ACCESS_CODE.encode("utf-8")):
+                self.send_json(401, {"error": "접속 코드가 맞지 않습니다.", "needsCode": True})
+                return
 
         try:
             length = int(self.headers.get("Content-Length", ""))
@@ -203,6 +330,11 @@ class Handler(SimpleHTTPRequestHandler):
             text, mode, cells, png = parse_request(self.rfile.read(length))
         except ValueError as exc:
             self.send_json(400, {"error": str(exc)})
+            return
+
+        refused = LIMITER.take(self.client_ip())
+        if refused:
+            self.send_json(429, {"error": refused})
             return
 
         try:
@@ -223,7 +355,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main() -> None:
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
+    port = int(os.environ.get("PORT") or (sys.argv[1] if len(sys.argv) > 1 else 8000))
     api_key = os.environ.get("GEMINI_API_KEY")
     if api_key:
         Handler.client = genai.Client(api_key=api_key)
@@ -231,8 +363,13 @@ def main() -> None:
         print("주의: GEMINI_API_KEY가 없어 AI 조언은 동작하지 않습니다. 연습과 채점은 됩니다.")
 
     server = ThreadingHTTPServer(("0.0.0.0", port), partial(Handler, directory=str(ROOT)))
-    print(f"글씨 교정 연습: http://localhost:{port}  (AI 모델: {MODEL})")
-    print("같은 와이파이의 iPad에서는 http://<이 PC의 IP 주소>:%d 로 엽니다. 끝내려면 Ctrl+C." % port)
+    limits = f"하루 {DAILY_LIMIT}회, 접속 주소별 {PER_IP_DAILY_LIMIT}회, 간격 {MIN_INTERVAL_SECONDS:g}초"
+    print(f"AI 모델: {MODEL} | 접속 코드: {'사용' if ACCESS_CODE else '없음'} | 제한: {limits}", flush=True)
+    if API_ONLY:
+        print(f"AI 조언 전용 서버: 포트 {port}{API_PATH} | 허용 출처: {', '.join(sorted(ALLOWED_ORIGINS)) or '없음'}", flush=True)
+    else:
+        print(f"글씨 교정 연습: http://localhost:{port}")
+        print("같은 와이파이의 iPad에서는 http://<이 PC의 IP 주소>:%d 로 엽니다. 끝내려면 Ctrl+C." % port, flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
