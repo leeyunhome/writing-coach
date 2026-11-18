@@ -30,7 +30,6 @@
   const BASE_LINES = 14;
   const MORE_LINES = 6;
   const MAX_LINES = 80;
-  const INK = '#1b2a4a';
   const DAYS_SHOWN = 10;
 
   const state = {
@@ -222,8 +221,8 @@
   }
 
   function drawInk(ctx) {
-    ctx.strokeStyle = INK;
-    ctx.fillStyle = INK;
+    ctx.strokeStyle = Theme.color('ink');
+    ctx.fillStyle = Theme.color('ink');
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     for (const stroke of state.strokes) {
@@ -235,8 +234,8 @@
     const dpr = window.devicePixelRatio || 1;
     const ctx = canvas.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.strokeStyle = INK;
-    ctx.fillStyle = INK;
+    ctx.strokeStyle = Theme.color('ink');
+    ctx.fillStyle = Theme.color('ink');
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     return ctx;
@@ -397,10 +396,10 @@
     out.height = (height + footer) * scale;
     const ctx = out.getContext('2d');
     ctx.scale(scale, scale);
-    ctx.fillStyle = '#fff';
+    ctx.fillStyle = Theme.color('paper');   // 저장 이미지도 고른 테마의 종이·잉크 색으로
     ctx.fillRect(0, 0, width, height + footer);
 
-    ctx.strokeStyle = '#cfd6e0';
+    ctx.strokeStyle = Theme.color('paper-line');
     ctx.lineWidth = 1;
     ctx.beginPath();
     for (let i = 1; i <= state.lines; i++) {
@@ -411,7 +410,7 @@
     drawInk(ctx);
 
     const text = currentText();
-    ctx.fillStyle = '#6b7280';
+    ctx.fillStyle = Theme.color('muted');
     ctx.font = '14px sans-serif';
     ctx.textBaseline = 'middle';
     ctx.fillText([text.title, text.author, today()].filter(Boolean).join(' · '), 12, height + footer / 2);
@@ -511,6 +510,8 @@
 
     $('save').addEventListener('click', saveImage);
     Sound.bindToggle($('sound'));
+    Theme.bindSelect($('theme'));
+    window.addEventListener('themechange', layout);
 
     window.addEventListener('resize', layout);
     // 화면을 떠날 때 기다리던 저장을 바로 끝냅니다.

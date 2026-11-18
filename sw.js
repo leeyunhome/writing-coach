@@ -12,6 +12,7 @@ const SHELL_FILES = [
   'scoring.js',
   'sound.js',
   'ink.js',
+  'theme.js',
   'app.js',
   'pilsa.html',
   'pilsa.js',
@@ -21,7 +22,7 @@ const SHELL_FILES = [
   'icons/apple-touch-icon.png',
 ];
 
-const FONT_HOSTS = new Set(['fonts.googleapis.com', 'fonts.gstatic.com']);
+const FONT_HOSTS = new Set(['fonts.googleapis.com', 'fonts.gstatic.com', 'cdn.jsdelivr.net']);
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

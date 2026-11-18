@@ -108,7 +108,7 @@
 
     // 가운데 점선(글자 중심을 잡는 기준)
     ctx.save();
-    ctx.strokeStyle = '#e3e7ee';
+    ctx.strokeStyle = Theme.color('guide-line');
     ctx.lineWidth = 1;
     ctx.setLineDash([4, 4]);
     ctx.beginPath();
@@ -121,14 +121,14 @@
 
     const font = FONTS[state.font];
     if (state.mode === 'trace') {
-      Scoring.drawGlyph(ctx, cell.ch, font,size, '#d3d8e0');
+      Scoring.drawGlyph(ctx, cell.ch, font, size, Theme.color('guide'));
     } else if (cell.result && !cell.result.empty) {
       // 혼자 쓰기는 채점한 뒤에만 본보기를 겹쳐 보여 줍니다.
-      Scoring.drawGlyph(ctx, cell.ch, font,size, 'rgba(214, 60, 50, 0.32)');
+      Scoring.drawGlyph(ctx, cell.ch, font, size, Theme.color('overlay'));
     }
 
     // 화면에는 보정한 획을 그립니다. 채점과 AI 조언 이미지는 원래 획을 씁니다.
-    Scoring.drawStrokes(ctx, Ink.smoothStrokes(cell.strokes, size), size, '#1b2a4a');
+    Scoring.drawStrokes(ctx, Ink.smoothStrokes(cell.strokes, size), size, Theme.color('ink'));
   }
 
   function redrawAll() {
@@ -817,6 +817,8 @@
     $('grade').addEventListener('click', grade);
 
     Sound.bindToggle($('sound'));
+    Theme.bindSelect($('theme'));
+    window.addEventListener('themechange', redrawAll);
     $('advise').addEventListener('click', requestAdvice);
 
     build();
