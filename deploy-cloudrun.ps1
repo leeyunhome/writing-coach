@@ -10,6 +10,14 @@
   실행 (이 폴더에서)
     powershell -ExecutionPolicy Bypass -File .\deploy-cloudrun.ps1
     powershell -ExecutionPolicy Bypass -File .\deploy-cloudrun.ps1 -NewAccessCode    # 접속 코드를 새로 만들 때
+    powershell -ExecutionPolicy Bypass -File .\deploy-cloudrun.ps1 -NewGeminiKey     # 앱 전용 Gemini 키를 새로 만들 때
+
+  Gemini 키
+    -GeminiProject로 정한 프로젝트(기본은 서버 프로젝트)에 앱 전용 키를 만들어(Gemini API만 쓰도록 제한)
+    Secret Manager에 바로 넣습니다. 결제가 연결되지 않은 프로젝트를 정하면 Gemini 무료 등급으로 돌아갑니다.
+      예) .\deploy-cloudrun.ps1 -GeminiProject <결제 없는 프로젝트ID> -NewGeminiKey
+    키 값은 화면에 나오지 않습니다. 내 PC의 GEMINI_API_KEY(다른 도구와 같이 쓰는 키)는 쓰지 않으므로,
+    앱의 사용량과 비용이 이 프로젝트에만 잡히고 한도도 이 프로젝트에만 걸 수 있습니다.
 
   하는 일
     API 켜기 -> Gemini 키와 접속 코드를 Secret Manager에 보관 -> 빌드와 배포
@@ -20,11 +28,15 @@ param(
   [string]$Project = '',
   [string]$Region = 'asia-northeast3',          # 서울
   [string]$Service = 'writing-coach-advice',
+  [string]$GeminiProject = '',                  # Gemini 키를 만들 프로젝트(비우면 서버 프로젝트)
   [string]$AllowedOrigin = 'https://leeyunhome.github.io',
-  [int]$DailyLimit = 200,
+  [int]$DailyLimit = 100,                       # 서버가 세는 하루 횟수(서버가 다시 켜지면 초기화)
+  [int]$GeminiPerDay = 100,                     # Google이 막는 하루 횟수(모델별, 이 프로젝트에만)
+  [int]$GeminiPerMinute = 10,                   # Google이 막는 분당 횟수(이 프로젝트에만)
   [int]$PerIpDailyLimit = 30,
   [int]$MinIntervalSeconds = 15,
-  [switch]$NewAccessCode
+  [switch]$NewAccessCode,
+  [switch]$NewGeminiKey
 )
 
 # Windows PowerShell 5.1에서 'Stop'으로 두면 gcloud가 진행 상황을 stderr에 쓸 때도 멈추므로,
@@ -82,7 +94,8 @@ if ($LASTEXITCODE -ne 0) { Fail "로그인이 만료됐습니다($account). gclo
 
 if (-not $Project) { $Project = (& gcloud config get-value project 2>$null) }
 if (-not $Project) { Fail '프로젝트가 정해져 있지 않습니다. -Project <프로젝트ID> 로 지정해 주세요.' }
-Write-Host "계정: $account | 프로젝트: $Project | 지역: $Region | 서비스: $Service"
+if (-not $GeminiProject) { $GeminiProject = $Project }
+Write-Host "계정: $account | 프로젝트: $Project | Gemini 키 프로젝트: $GeminiProject | 지역: $Region | 서비스: $Service"
 
 $billing = (& gcloud billing projects describe $Project --format='value(billingEnabled)' 2>$null)
 if ($billing -eq 'False') {
@@ -91,17 +104,26 @@ if ($billing -eq 'False') {
   Write-Host '주의: 결제 계정 연결 여부를 확인하지 못했습니다. 배포 중 결제 관련 오류가 나면 연결해 주세요.' -ForegroundColor Yellow
 }
 
-$geminiKey = $env:GEMINI_API_KEY
-if (-not $geminiKey) { $geminiKey = [Environment]::GetEnvironmentVariable('GEMINI_API_KEY', 'User') }
-if (-not $geminiKey) { Fail 'GEMINI_API_KEY 환경 변수가 없습니다.' }
-
 # ---------- 1. 필요한 API 켜기 ----------
 Write-Host '1/5 필요한 Google Cloud API를 켭니다...'
-Invoke-Gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com --project $Project | Out-Null
+Invoke-Gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com `
+  --project $Project | Out-Null
+Invoke-Gcloud services enable generativelanguage.googleapis.com apikeys.googleapis.com --project $GeminiProject | Out-Null
 
 # ---------- 2. 비밀 값 보관 ----------
 Write-Host '2/5 Gemini 키와 접속 코드를 Secret Manager에 보관합니다...'
-Set-Secret $GeminiSecret $geminiKey
+if ($NewGeminiKey -or -not (Test-Secret $GeminiSecret)) {
+  # 앱 전용 키: Gemini API만 부를 수 있게 제한합니다. 키 값은 변수에만 담고 출력하지 않습니다.
+  # 이 명령은 키 값이 든 결과 전체를 stderr에도 출력하므로 stderr를 버립니다(키가 화면에 남지 않게).
+  $keyString = ((& gcloud services api-keys create --project $GeminiProject `
+    --display-name 'writing-coach advice server' `
+    --api-target=service=generativelanguage.googleapis.com `
+    --format='value(response.keyString)' 2>$null) | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0 -or -not $keyString) { Fail '앱 전용 Gemini 키를 만들지 못했습니다(키 출력을 숨기려고 gcloud 오류 내용도 숨겼습니다).' }
+  Set-Secret $GeminiSecret $keyString
+  $keyString = $null
+  Write-Host '    앱 전용 Gemini 키를 새로 만들어 보관했습니다.'
+}
 
 $accessCode = $null
 if ($NewAccessCode -or -not (Test-Secret $CodeSecret)) {
@@ -126,6 +148,37 @@ foreach ($secret in @($GeminiSecret, $CodeSecret)) {
 # Cloud Run 문서가 안내하는 빌더 역할을 줍니다(이미 있으면 그대로).
 Invoke-Gcloud projects add-iam-policy-binding $Project `
   --member "serviceAccount:$runtimeAccount" --role roles/run.builder --condition None --quiet | Out-Null
+
+# Google 쪽 사용량 한도. 서버의 횟수 제한과 달리 서버가 다시 켜져도 초기화되지 않는 실제 상한입니다.
+$token = ((& gcloud auth print-access-token 2>$null) | Out-String).Trim()
+$quotaHeaders = @{ Authorization = "Bearer $token"; 'X-Goog-User-Project' = $Project }
+$geminiProjectNumber = (Invoke-Gcloud projects describe $GeminiProject --format='value(projectNumber)')
+$quotaBase = "https://serviceusage.googleapis.com/v1beta1/projects/$geminiProjectNumber/services/generativelanguage.googleapis.com/consumerQuotaMetrics"
+
+function Set-QuotaOverride([string]$limitPath, [int]$value) {
+  $uri = "$quotaBase/$limitPath/consumerOverrides"
+  $body = @{ overrideValue = "$value" } | ConvertTo-Json
+  try {
+    $existing = (Invoke-RestMethod -Uri $uri -Headers $quotaHeaders).overrides
+    if ($existing) {
+      $target = "https://serviceusage.googleapis.com/v1beta1/$($existing[0].name)"
+      Invoke-RestMethod -Method Patch -Uri "${target}?force=true&updateMask=overrideValue" -Headers $quotaHeaders -ContentType 'application/json' -Body $body | Out-Null
+    } else {
+      Invoke-RestMethod -Method Post -Uri "${uri}?force=true" -Headers $quotaHeaders -ContentType 'application/json' -Body $body | Out-Null
+    }
+  } catch {
+    Fail "Gemini 사용량 한도를 걸지 못했습니다: $($_.Exception.Message)"
+  }
+}
+
+$geminiBilling = (& gcloud billing projects describe $GeminiProject --format='value(billingEnabled)' 2>$null)
+if ($geminiBilling -eq 'True') {
+  Write-Host "    Gemini 사용량 한도: 하루 ${GeminiPerDay}회(모델별), 분당 ${GeminiPerMinute}회"
+  Set-QuotaOverride 'generativelanguage.googleapis.com%2Fgenerate_requests_per_model_per_day/limits/%2Fd%2Fmodel%2Fproject' $GeminiPerDay
+  Set-QuotaOverride 'generativelanguage.googleapis.com%2Fgenerate_content_requests/limits/%2Fmin%2Fproject%2Fregion' $GeminiPerMinute
+} else {
+  Write-Host "    Gemini 키 프로젝트에 결제가 없어 무료 등급으로 돌아갑니다(요금 없음, Google의 무료 한도 적용)."
+}
 
 # ---------- 3. 빌드와 배포 ----------
 Write-Host '3/5 빌드하고 배포합니다(처음에는 3~5분 걸립니다)...'

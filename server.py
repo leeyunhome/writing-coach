@@ -7,11 +7,12 @@ Cloud Run 배포:  deploy-cloudrun.ps1 참고. API_ONLY=1로 AI 조언만 제공
 환경 변수
   GEMINI_API_KEY        Gemini API 키. 브라우저로 보내지 않습니다.
   GEMINI_MODEL          모델 이름(기본 gemini-flash-latest)
+  GEMINI_FALLBACK_MODEL 첫 모델이 붐비거나 횟수가 찼을 때 쓸 모델(기본 gemini-flash-lite-latest, 비우면 쓰지 않음)
   PORT                  포트(Cloud Run이 정해 줌). 없으면 명령줄 인자, 그것도 없으면 8000
   API_ONLY=1            화면 파일은 내보내지 않고 /api/advice만 엽니다.
   ACCESS_CODE           정해 두면 이 코드를 보낸 요청만 AI 조언을 받습니다.
   ALLOWED_ORIGINS       다른 주소의 화면에서 부를 수 있게 허용할 출처(쉼표로 구분)
-  DAILY_LIMIT           하루(한국 시간) 전체 AI 조언 횟수 상한(기본 200)
+  DAILY_LIMIT           하루(한국 시간) 전체 AI 조언 횟수 상한(기본 100)
   PER_IP_DAILY_LIMIT    하루 접속 주소별 상한(기본 30)
   MIN_INTERVAL_SECONDS  같은 접속 주소의 요청 사이 최소 간격(기본 15초)
 """
@@ -37,6 +38,7 @@ from pydantic import BaseModel
 
 ROOT = Path(__file__).resolve().parent
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-flash-lite-latest")
 MAX_BODY_BYTES = 3 * 1024 * 1024
 MAX_CELLS = 40
 PNG_PREFIX = "data:image/png;base64,"
@@ -49,7 +51,7 @@ ALLOWED_ORIGINS = {
     for origin in os.environ.get("ALLOWED_ORIGINS", "").split(",")
     if origin.strip()
 }
-DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT", "200"))
+DAILY_LIMIT = int(os.environ.get("DAILY_LIMIT", "100"))
 PER_IP_DAILY_LIMIT = int(os.environ.get("PER_IP_DAILY_LIMIT", "30"))
 MIN_INTERVAL_SECONDS = float(os.environ.get("MIN_INTERVAL_SECONDS", "15"))
 KST = timezone(timedelta(hours=9))
@@ -201,18 +203,29 @@ def parse_request(body: bytes) -> tuple[str, str, list[dict], bytes]:
 
 
 def request_advice(client: genai.Client, text: str, mode: str, cells: list[dict], png: bytes) -> dict:
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=[
-            types.Part.from_bytes(data=png, mime_type="image/png"),
-            build_prompt(text, mode, cells),
-        ],
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_INSTRUCTION,
-            response_mime_type="application/json",
-            response_schema=Advice,
-        ),
-    )
+    """첫 모델이 붐비거나(503) 사용량이 찼으면(429) 대신 모델로 한 번 더 시도합니다.
+    무료 등급은 좋은 모델의 하루 횟수가 적고 붐빌 때 먼저 밀려나서, 가벼운 모델로 넘어가 조언을 이어 갑니다."""
+    models = [MODEL] + ([FALLBACK_MODEL] if FALLBACK_MODEL and FALLBACK_MODEL != MODEL else [])
+    for index, model in enumerate(models):
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=[
+                    types.Part.from_bytes(data=png, mime_type="image/png"),
+                    build_prompt(text, mode, cells),
+                ],
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    response_mime_type="application/json",
+                    response_schema=Advice,
+                ),
+            )
+            break
+        except errors.APIError as exc:
+            if exc.code in (429, 503) and index + 1 < len(models):
+                print(f"{model} 사용 불가({exc.code}), {models[index + 1]}(으)로 다시 시도합니다.", flush=True)
+                continue
+            raise
     if not response.text:
         raise RuntimeError("AI가 빈 응답을 돌려줬습니다.")
     return Advice.model_validate_json(response.text).model_dump()
@@ -343,6 +356,8 @@ class Handler(SimpleHTTPRequestHandler):
             self.log_error("Gemini API 오류: %s", exc)
             if exc.code == 429:
                 self.send_json(429, {"error": "AI 사용량 한도에 걸렸습니다. 잠시 뒤 다시 시도해 주세요."})
+            elif exc.code == 503:
+                self.send_json(503, {"error": "AI가 지금 붐빕니다. 잠시 뒤 다시 시도해 주세요."})
             else:
                 self.send_json(502, {"error": f"AI 요청이 실패했습니다. (코드 {exc.code})"})
             return
@@ -364,7 +379,7 @@ def main() -> None:
 
     server = ThreadingHTTPServer(("0.0.0.0", port), partial(Handler, directory=str(ROOT)))
     limits = f"하루 {DAILY_LIMIT}회, 접속 주소별 {PER_IP_DAILY_LIMIT}회, 간격 {MIN_INTERVAL_SECONDS:g}초"
-    print(f"AI 모델: {MODEL} | 접속 코드: {'사용' if ACCESS_CODE else '없음'} | 제한: {limits}", flush=True)
+    print(f"AI 모델: {MODEL} (대신: {FALLBACK_MODEL or '없음'}) | 접속 코드: {'사용' if ACCESS_CODE else '없음'} | 제한: {limits}", flush=True)
     if API_ONLY:
         print(f"AI 조언 전용 서버: 포트 {port}{API_PATH} | 허용 출처: {', '.join(sorted(ALLOWED_ORIGINS)) or '없음'}", flush=True)
     else:
